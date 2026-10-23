@@ -1,0 +1,32 @@
+# Datasets — never commit audio
+data/*
+!data/README.md
+!data/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Model artifacts
+models/
+*.pt
+*.pth
+*.pkl
+*.joblib
+
+# Outputs
+outputs/
+*.mid
+*.wav
+*.png
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/

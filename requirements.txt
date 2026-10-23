@@ -1,0 +1,16 @@
+numpy
+scipy
+pandas
+librosa
+soundfile
+scikit-learn
+matplotlib
+mido
+jupyter
+
+# Add later if we go the deep-learning route:
+# torch
+# torchaudio
+
+# Add later if we do source separation on full songs:
+# demucs

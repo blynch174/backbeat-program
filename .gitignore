@@ -1,7 +1,10 @@
 # Datasets — never commit audio
 data/*
 !data/README.md
-!data/.gitkeep
+
+# Trained models
+models/
+*.joblib
 
 # Python
 __pycache__/
@@ -13,18 +16,9 @@ venv/
 # Notebooks
 .ipynb_checkpoints/
 
-# Model artifacts
-models/
-*.pt
-*.pth
-*.pkl
-*.joblib
-
 # Outputs
 outputs/
 *.mid
-*.wav
-*.png
 
 # OS / editor
 .DS_Store

@@ -5,12 +5,14 @@ librosa
 soundfile
 scikit-learn
 matplotlib
-mido
+joblib
 jupyter
 
-# Add later if we go the deep-learning route:
-# torch
-# torchaudio
+# Keras network (scripts/train.py --keras)
+tensorflow
 
-# Add later if we do source separation on full songs:
+# MIDI export (scripts/transcribe.py --midi)
+mido
+
+# Future work: source separation for full songs
 # demucs

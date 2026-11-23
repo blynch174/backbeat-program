@@ -127,6 +127,35 @@ def simultaneity_rate(hits, tolerance_ms=SIMULTANEITY_MS):
     return 1.0 - len(isolated_hits(hits, tolerance_ms)) / len(hits)
 
 
+def group_events(hits, tolerance_ms=SIMULTANEITY_MS):
+    """Collapse hits struck together into one musical event.
+
+    The annotations list a simultaneous kick and hi-hat as two entries a
+    few milliseconds apart. Taking one window per entry would describe
+    the same moment twice, with near-identical audio and identical
+    targets, which inflates every count that follows.
+
+    Returns a list of (time_seconds, labels) where time is the earliest
+    attack in the group and labels is the set of drums it contains.
+    """
+    if not hits:
+        return []
+
+    tolerance = tolerance_ms / 1000
+    events = []
+    start, labels = hits[0][0], {hits[0][1]}
+
+    for time, label in hits[1:]:
+        if time - start <= tolerance:
+            labels.add(label)
+        else:
+            events.append((start, labels))
+            start, labels = time, {label}
+
+    events.append((start, labels))
+    return events
+
+
 # --------------------------------------------------------------------------
 # Representation A: hand-designed descriptors
 # --------------------------------------------------------------------------
@@ -220,37 +249,143 @@ def featurize(window, sample_rate, representation="summary"):
     raise ValueError(f"unknown representation: {representation}")
 
 
-def build_training_set(files, representation="summary", max_hits_per_file=None):
-    """Build a feature table from isolated single-instrument recordings.
+def collect_windows(files, max_hits_per_file=None):
+    """Cut raw audio windows from isolated single-instrument recordings.
 
     Onsets are detected within each file and the instrument comes from
-    the filename, so every row is a clean example of exactly one drum.
-    This is the dataset's intended use for its #train material.
+    the filename, so every window is a clean example of exactly one
+    drum. Raw audio is returned rather than features so that windows can
+    be summed into artificial mixtures before being described.
 
-    Returns (X, y, groups) where groups holds each row's drum kit.
+    Returns (windows, labels, groups, sample_rate).
     """
     from .onsets import detect_onsets
     from .splits import kit_id
 
-    rows, labels, groups = [], [], []
+    windows, labels, groups = [], [], []
+    sample_rate = None
 
     for path in files:
         label = loading.file_label(path)
         if label is None:
             continue
 
-        samples, sr = loading.load_audio(path)
-        times = detect_onsets(samples, sr)
+        samples, sample_rate = loading.load_audio(path)
+        times = detect_onsets(samples, sample_rate)
         if max_hits_per_file is not None:
             times = times[:max_hits_per_file]
 
         for t in times:
-            window = extract_window(samples, sr, t)
-            rows.append(featurize(window, sr, representation))
+            windows.append(extract_window(samples, sample_rate, t))
             labels.append(label)
             groups.append(kit_id(path))
 
-    return np.asarray(rows), np.asarray(labels), np.asarray(groups)
+    return windows, labels, groups, sample_rate
+
+
+def synthesize_mixtures(
+    windows, labels, groups, sample_rate, ratio=1.0, max_overlap=2, seed=0
+):
+    """Create artificial simultaneous hits by summing isolated windows.
+
+    A detector trained only on isolated drums has never encountered a
+    kick with a hi-hat layered over it, and in practice stays silent
+    when one arrives. IDMT ships perfectly separated tracks precisely so
+    that mixtures can be rebuilt from them, which supplies multi-label
+    training data with exact ground truth.
+
+    Components are drawn from the same drum kit so the result is
+    acoustically coherent and the row keeps a valid group. Each is
+    scaled by a random gain, since drummers do not strike every drum
+    equally hard.
+
+    Returns (mixed_windows, multilabel_targets, groups).
+    """
+    rng = np.random.default_rng(seed)
+
+    by_kit = {}
+    for window, label, group in zip(windows, labels, groups):
+        by_kit.setdefault(group, {}).setdefault(label, []).append(window)
+
+    usable = [kit for kit, bank in by_kit.items() if len(bank) >= 2]
+    if not usable:
+        return [], [], []
+
+    n_wanted = int(len(windows) * ratio)
+    mixed, targets, mixed_groups = [], [], []
+
+    for _ in range(n_wanted):
+        kit = usable[rng.integers(len(usable))]
+        bank = by_kit[kit]
+
+        n_components = min(max_overlap, len(bank))
+        chosen = rng.choice(
+            list(bank.keys()), size=n_components, replace=False
+        )
+
+        total = None
+        target = np.zeros(len(LABELS), dtype=int)
+
+        for label in chosen:
+            pool = bank[label]
+            component = pool[rng.integers(len(pool))]
+            gain = rng.uniform(0.6, 1.0)
+            total = component * gain if total is None else total + component * gain
+            target[LABELS.index(label)] = 1
+
+        # A real recording cannot exceed its own headroom, so a summed
+        # pair is limited rather than left louder than anything in the
+        # genuine material. Without this the energy features alone would
+        # betray which rows are synthetic.
+        peak = float(np.max(np.abs(total)))
+        if peak > 1.0:
+            total = total / peak * 0.99
+
+        mixed.append(total)
+        targets.append(target)
+        mixed_groups.append(kit)
+
+    return mixed, targets, mixed_groups
+
+
+def build_training_set(
+    files,
+    representation="summary",
+    max_hits_per_file=None,
+    multilabel=False,
+    synthesize=0.0,
+):
+    """Build a feature table from isolated single-instrument recordings.
+
+    With synthesize above zero, that many artificial mixtures are added
+    relative to the number of real windows, so the training distribution
+    contains overlapping hits rather than clean ones only. Synthesis
+    requires multi-label targets, since a mixture has no single answer.
+
+    Returns (X, y, groups).
+    """
+    windows, labels, groups, sample_rate = collect_windows(files, max_hits_per_file)
+
+    if multilabel:
+        targets = [
+            window_multilabel(0.0, [(0.0, label)]) for label in labels
+        ]
+    else:
+        targets = list(labels)
+
+    if synthesize > 0:
+        if not multilabel:
+            raise ValueError("synthesis requires multilabel targets")
+        extra_windows, extra_targets, extra_groups = synthesize_mixtures(
+            windows, labels, groups, sample_rate, ratio=synthesize
+        )
+        windows = windows + extra_windows
+        targets = targets + extra_targets
+        groups = groups + extra_groups
+
+    rows = [featurize(window, sample_rate, representation) for window in windows]
+
+    return np.asarray(rows), np.asarray(targets), np.asarray(groups)
 
 
 def build_evaluation_set(
@@ -282,21 +417,31 @@ def build_evaluation_set(
         if annotation is None:
             continue
 
-        hits = loading.load_annotations(annotation)
-        if exclude_simultaneous:
-            hits = isolated_hits(hits)
-        if not hits:
+        all_hits = loading.load_annotations(annotation)
+        if not all_hits:
             continue
 
         samples, sr = loading.load_audio(path)
-        all_hits = loading.load_annotations(annotation)
 
-        for time, label in hits:
-            window = extract_window(samples, sr, time)
-            rows.append(featurize(window, sr, representation))
-            targets.append(
-                window_multilabel(time, all_hits) if multilabel else label
-            )
-            groups.append(kit_id(path))
+        if multilabel:
+            # One window per musical event, so a simultaneous pair is
+            # described once rather than twice.
+            for time, labels in group_events(all_hits):
+                if exclude_simultaneous and len(labels) > 1:
+                    continue
+                target = np.zeros(len(LABELS), dtype=int)
+                for label in labels:
+                    target[LABELS.index(label)] = 1
+                rows.append(featurize(extract_window(samples, sr, time), sr,
+                                      representation))
+                targets.append(target)
+                groups.append(kit_id(path))
+        else:
+            hits = isolated_hits(all_hits) if exclude_simultaneous else all_hits
+            for time, label in hits:
+                rows.append(featurize(extract_window(samples, sr, time), sr,
+                                      representation))
+                targets.append(label)
+                groups.append(kit_id(path))
 
     return np.asarray(rows), np.asarray(targets), np.asarray(groups)

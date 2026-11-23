@@ -61,9 +61,13 @@ pip install -r requirements.txt
 Download the dataset into `data/` — see `data/README.md` — then:
 
 ```bash
-python scripts/explore_data.py          # what is in the data
-python scripts/train.py                 # compare models, save the best
-python scripts/transcribe.py some.wav   # transcribe a recording
+python scripts/explore_data.py        # what is in the data
+
+# best configuration
+python scripts/train.py --held-out-kits --representation spectrogram \
+                        --multilabel --synthesize 1.0
+
+python scripts/transcribe.py some.wav --midi out.mid
 ```
 
 ## Dataset
@@ -108,6 +112,22 @@ model that neglects the rarer drums.
 is the convention in onset-detection research and keeps results
 comparable with published work, plus 25 ms and 10 ms to show how
 precisely hits are actually placed.
+
+## Results
+
+Best configuration: **0.907 macro F1** on held-out drum kits — soft
+voting over random forest, MLP and SVC, on PCA-reduced mel
+spectrograms, with multi-label targets and synthesized mixtures in
+training. Both drums recovered in 97% of simultaneous windows.
+
+| configuration | hand-designed | spectrogram + PCA |
+|---|---|---|
+| single-label | 0.674 | 0.641 |
+| multi-label, isolated training only | 0.707 | — |
+| multi-label + synthesized mixtures | 0.866 | **0.907** |
+
+`docs/EXPERIMENTS.md` records what was tried, what worked, and what did
+not.
 
 ## Models
 

@@ -42,19 +42,49 @@ def main(args):
         train_files = train_files[: args.quick]
         mix_files = mix_files[: max(4, args.quick // 8)]
 
+    if args.held_out_kits:
+        # The isolated recordings and the mix loop of one kit are the
+        # same drums. Training on every kit and testing on every loop
+        # measures kit-adapted transcription, not generalisation, so
+        # this option reserves whole kits for the test side.
+        kits = sorted({splits.kit_id(p) for p in mix_files})
+        rng = np.random.default_rng(42)
+        held = set(
+            rng.choice(kits, size=max(1, int(round(0.25 * len(kits)))),
+                       replace=False).tolist()
+        )
+        train_files = [p for p in train_files if splits.kit_id(p) not in held]
+        mix_files = [p for p in mix_files if splits.kit_id(p) in held]
+        print(f"holding out {len(held)} of {len(kits)} kits for testing")
+
     print(f"training files {len(train_files)}   evaluation loops {len(mix_files)}")
     print(f"representation {args.representation}   "
           f"targets {'multi-label' if args.multilabel else 'single-label'}")
     print()
 
     print("building training table from isolated recordings ...")
+    if args.synthesize > 0:
+        print(f"  adding synthesized mixtures at ratio {args.synthesize}")
     X_train, y_train, groups_train = features.build_training_set(
-        train_files, representation=args.representation
+        train_files,
+        representation=args.representation,
+        multilabel=args.multilabel,
+        synthesize=args.synthesize,
     )
     print(f"  {X_train.shape[0]} rows x {X_train.shape[1]} features")
     print(f"  {len(np.unique(groups_train))} distinct kits")
-    counts = {label: int((y_train == label).sum()) for label in loading.LABELS}
-    print(f"  class counts {counts}")
+    if args.multilabel:
+        per_drum = {
+            label: int(y_train[:, i].sum())
+            for i, label in enumerate(loading.LABELS)
+        }
+        mixed = int((y_train.sum(axis=1) > 1).sum())
+        print(f"  label counts {per_drum}")
+        print(f"  rows with more than one drum {mixed} "
+              f"({100 * mixed / len(y_train):.1f}%)")
+    else:
+        counts = {label: int((y_train == label).sum()) for label in loading.LABELS}
+        print(f"  class counts {counts}")
     print()
 
     print("building evaluation table from annotated loops ...")
@@ -74,12 +104,7 @@ def main(args):
     print("=" * 62)
     print(f"{'model':<16}{'macro F1':>12}{'std':>10}")
 
-    if args.multilabel:
-        y_train_cv = np.array(
-            [features.window_multilabel(0, [(0, label)]) for label in y_train]
-        )
-    else:
-        y_train_cv = y_train
+    y_train_cv = y_train
 
     results = models.compare_models(
         X_train, y_train_cv, groups_train,
@@ -158,6 +183,12 @@ if __name__ == "__main__":
     parser.add_argument("--representation", choices=["summary", "spectrogram"],
                         default="summary")
     parser.add_argument("--multilabel", action="store_true")
+    parser.add_argument("--held-out-kits", action="store_true",
+                        help="reserve whole drum kits for evaluation, so "
+                             "no tested kit was seen in training")
+    parser.add_argument("--synthesize", type=float, default=0.0,
+                        help="add this many synthetic mixtures per real "
+                             "window; requires --multilabel")
     parser.add_argument("--exclude-simultaneous", action="store_true",
                         help="drop overlapping hits from the evaluation set")
     parser.add_argument("--keras", action="store_true",

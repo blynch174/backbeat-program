@@ -1,4 +1,4 @@
-# Backbeat — Automatic Drum Transcription
+# BackBeat — Automatic Drum Transcription
 
 CSE 5717, Big Data Analytics — Fall 2026
 Brandon Lynch and Aman Patel
